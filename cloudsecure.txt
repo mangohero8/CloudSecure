@@ -1,0 +1,1173 @@
+RE: Illumio CloudSecure and Insights PoC ARB Questions and Discussion
+
+To: Kong Fang, Michael Sonstein, Jeff Greenwalde, Kyle Epps, Jeremy Wilhelm
+
+From: Robb
+
+Date: March 2026
+
+Kong / Michael — thanks for putting together the questions. Below are detailed answers to each item. I’ve pulled from Illumio’s product documentation, architecture briefs, and our internal context to give definitive answers where possible. Where vendor confirmation is still needed, I’ve noted it but kept it minimal.
+
+────────────────────────────────────────────────────────────
+
+Microsegmentation
+
+Provide micro segmentation? Is this needed? The CSP’s have already architected segmentation in their setup and deployments.
+
+Yes, and here’s why it’s needed beyond what CSPs provide natively:
+
+CSPs provide Security Groups (AWS), NSGs (Azure), and Firewall Rules (GCP) — but these are per-account, per-cloud controls with no cross-environment visibility or centralized management. Illumio CloudSecure doesn’t replace these; it uses them as enforcement points and adds a centralized orchestration layer on top.
+
+What CloudSecure actually does:
+
+•	Uses the CSP’s own native controls (SGs, NACLs, NSGs, Azure Firewall, GCP Firewall Rules) as enforcement points — no additional inline appliances.
+
+•	Provides a single pane of glass across all cloud accounts and CSPs for visibility into what’s communicating.
+
+•	Enables application-centric policy using labels (Role, App, Environment, Location) instead of IP-based rules, so policy follows workloads regardless of IP changes.
+
+•	Acts as a centralized management tool where Firewall/ACL/NSG changes can be monitored, reviewed, and pushed from one place instead of individually per account.
+
+•	Provides progressive enforcement: start in Visibility Only mode, then Selective Enforcement, then Full Enforcement — no prayer-based deployments.
+
+Bottom line: We know that at some point additional rules will be needed as workloads change. CloudSecure gives us the centralized brain to manage that across CSPs. Illumio could be our central management tool where changes can be monitored and applied consistently, with visibility into what’s communicating and the ability to troubleshoot.
+
+
+
+Visibility & Data Collection
+
+What information is being pulled? (Illumio visibility for resource types)
+
+Resource Metadata (Inventory): CloudSecure discovers all cloud resource types via CSP APIs — EC2 instances, RDS, Lambda, VPCs, subnets, security groups, load balancers, storage, and more across AWS, Azure, GCP, and OCI. Resource tags are collected and mapped to Illumio labels. Full list at: product-docs-repo.illumio.com/.../illumio-visibility-for-resource-types.html
+
+Flow Log Telemetry:
+
+•	AWS: VPC Flow Logs from S3 buckets. Fields ingested: srcaddr, srcport, dstaddr, dstport, protocol, action, bytes, start, packets, tcp-flags, interface-id, flow-direction, pkt-srcaddr, pkt-dstaddr.
+
+•	Azure: VNET Flow Logs, NSG Flow Logs, and Azure Firewall Network Rule logs from Storage Blobs.
+
+•	GCP: VPC Flow Logs and Firewall logs via Pub/Sub subscriptions and Log Router sinks.
+
+Batch Timing: The map ingests traffic flows every 10 minutes in 60-minute chunks. Exported enriched flows are batched every 60 minutes. Partial flow data from CSPs can take up to 40 minutes to retrieve. After initial onboarding there’s a 15-minute latency before traffic first appears, then updates every 2 minutes.
+
+
+
+What is a resource defined as? (CloudSecure context)
+
+A resource is any cloud object discovered from the CSP APIs/SDKs (e.g., AWS::EC2::Instance, Azure VirtualMachine). Illumio also defines resource categories to group types (e.g., VPCs fall under “Network Management”).
+
+•	Resources appear on the Inventory, Map, and Traffic pages once the account is onboarded.
+
+•	Policy can be written for resources that have enforcement point attachments (Security Groups for AWS, NSGs for Azure).
+
+•	Some resources appear for visibility only — EKS Clusters/Nodegroups and S3 buckets appear in inventory but won’t have flow data.
+
+•	Only EC2 instances, RDS DBClusters, RDS DBInstances, and Azure VMs get fully decorated flow data.
+
+•	Azure PaaS offerings only log NSG/VNET traffic when a private endpoint is configured.
+
+
+
+Have we done any estimated costs for data out? What’s the increase from what we have today? I’m going to obtain this via the POC.
+
+Illumio licensing is workload-based (average billable workloads over 30 days). The CloudSecure Usage page includes a workload calculator to model growth. Cost components include:
+
+•	Illumio license cost: Per-workload pricing, need count of cloud resources across all CSP accounts.
+
+•	CSP flow log storage: Enabling VPC/NSG/VNET flow logs generates data in your S3/Storage Blob/Pub Sub — standard CSP storage and data transfer rates apply.
+
+•	CSP data transfer: CloudSecure reads from your cloud storage via API (TCP 443). Data egress charges depend on volume and CSP pricing.
+
+•	No additional infrastructure: CloudSecure is SaaS — no on-prem servers or appliances needed.
+
+The POC will give us concrete numbers based on our actual workload count and flow volume.
+
+
+
+What about Prisma? How does it relate to cloud master / Lead Sheets?
+
+Prisma (CSPM) and CloudSecure (microsegmentation) are complementary, not overlapping:
+
+•	Prisma Cloud: Configuration posture management, compliance scanning, vulnerability detection, runtime protection. It answers: “Are my cloud resources configured correctly?”
+
+•	CloudSecure: Traffic visibility, microsegmentation policy, enforcement through native CSP controls. It answers: “What’s talking to what, and can I control it?”
+
+CloudSecure’s Insights page does surface some configuration insights (misconfigurations not adhering to best practices), but this supplements Prisma, not replaces it.
+
+
+
+What about the policy? Policy is maintained internally by Kubernetes; no out of scope.
+
+Correct — in-cluster Kubernetes network policy stays with K8s. CloudSecure doesn’t replace that. What it does provide:
+
+•	VPC/VNET-level visibility into traffic flowing in and out of EKS/AKS/GKE clusters.
+
+•	Security group enforcement controlling what can reach the cluster from outside.
+
+•	The Illumio cloud-operator (open-source Helm chart) can optionally stream cluster resource info to CloudSecure and enforce Illumio policies as K8s NetworkPolicies — but this would be additive to what we already have, not a replacement.
+
+
+
+How does this work with NGFW? (Palo Alto)
+
+Different layers, no conflict. Palo handles perimeter/north-south; CloudSecure manages east-west via cloud-native controls:
+
+•	CloudSecure programs: Security Groups, NACLs (AWS), NSGs (Azure), GCP Firewall Rules, and Azure Firewall policies.
+
+•	It does NOT program: Third-party firewalls like Palo Alto. These remain independently managed.
+
+•	For Azure, CloudSecure can write Azure Firewall policy (creates rule collection groups with “ICS.” prefix), which is Azure-native, not Palo.
+
+Traffic flow: hits Palo first at the perimeter, then CloudSecure-managed SGs/NSGs for east-west. The two operate at different enforcement points and should not conflict. We can confirm with both vendors to validate the layered approach.
+
+
+
+How is multi-region handled in configuration? We would ask that the service account needs for Illumio be accessible to the whole tenant/organization.
+
+CloudSecure handles multi-region natively:
+
+•	When onboarding an AWS account or Azure tenant/subscription, CloudSecure discovers resources across all regions within that account.
+
+•	The cross-account IAM role (AWS) or AD app registration “Illumio-CloudSecure-Access” (Azure) provides access across all regions.
+
+•	For GCP, onboarding can be done at the project, folder, or organization level.
+
+•	Flow logs do need to be configured per-region in each CSP (S3 bucket destinations for AWS, storage accounts for Azure, Pub/Sub topics for GCP).
+
+•	AWS best practice: Deploy a centralized log storage strategy with a single S3 bucket for all cross-VPC and cross-account flow logs.
+
+The service account/principal is scoped to the whole tenant/organization as requested — that’s the standard onboarding model.
+
+
+
+ 
+
+Insights (On-Prem & CDR)
+
+Insights — what are the requirements for agents?
+
+Illumio Insights in its current form is agentless for cloud workloads:
+
+•	Cloud: Insights uses the same API-based data as CloudSecure (flow logs, resource metadata). No agents required. It essentially uses the same data as CloudSecure (APIs), so no agents.
+
+•	On-Prem: Requires Illumio Core’s VEN (Virtual Enforcement Node) — a lightweight agent in the guest OS that collects telemetry and programs host-based firewalls (iptables/Linux, WFP/Windows).
+
+•	Insights Agent (AI feature): This is an AI-powered assistant within Insights — not a deployed agent. It enriches investigations using Microsoft Sentinel Data Lake, merging flows, resources, workloads, threat intel, user access, and vulnerability data.
+
+Since we don’t currently have Insights licensed, we intend to POC it this year. The AGT approvals need to cover both CloudSecure and Insights.
+
+
+
+Where do the agents need to run? Depending on the answers I’ll have more questions around how this aligns with our use of Managed services.
+
+Cloud (CloudSecure/Insights): No agents anywhere. Fully agentless via API connections to CSP flow log sources (S3, Storage Blob, Pub/Sub).
+
+On-Prem (Illumio Core): VEN agents on each managed workload — VMs, bare-metal servers, cloud instances. The PCE (Policy Compute Engine) can run as Illumio’s SaaS or on-prem.
+
+Managed Services (RDS, Lambda, EKS, etc.): No agents needed or possible. Visibility comes through flow log ingestion at the VPC boundary.
+
+
+
+MITRE ATT&CK & Google Front End
+
+MITRE ATT&CK Framework — how does this work within Insights? Google mappings?
+
+Illumio Insights maps threats to MITRE ATT&CK natively:
+
+•	Continuous background monitoring of flows and workload communication to detect anomalies.
+
+•	Threats are automatically mapped to MITRE ATT&CK tactics and techniques (lateral movement, data exfiltration, C2, etc.).
+
+•	Severity-ranked with MITRE technique IDs, helping prioritize response and reduce alert fatigue.
+
+•	One-click containment integrated with Illumio Segmentation for instant isolation of compromised workloads.
+
+Google Cloud MITRE mappings: GCP separately published native security control mappings to MITRE ATT&CK through the MITRE Engenuity Center for Threat-Informed Defense. These map GCP tools (Chronicle, Security Command Center) to ATT&CK techniques. Illumio’s MITRE mapping is complementary — it covers network-level/segmentation detections, while GCP’s mappings cover platform-level controls. Reference: cloud.google.com/blog/products/identity-security/announcing-mitre-attck-mappings-released-for-google-cloud-security-capabilities
+
+
+
+How does this work with the Google Front End Service?
+
+CloudSecure communicates with GCP through standard HTTPS (TCP 443) API endpoints, which are fronted by Google Front End (GFE) for TLS termination. Specifically:
+
+•	Flow log collection uses Pub/Sub subscriptions. CloudSecure creates two roles with bindings for pubsub.subscriptions.consume, create, and delete permissions.
+
+•	Resource discovery uses GCP APIs through the onboarded service account.
+
+•	Illumio’s control plane uses specific public IP addresses to reach GCP (documented in the GCP Flow Log Access IP Addresses reference).
+
+The GFE encryption-in-transit model should be transparent to CloudSecure since it’s using standard authenticated API calls. Reference: cloud.google.com/security/encryption-in-transit
+
+
+
+Segmentation Policy & Network Architecture
+
+How does this segmentation work on a global network which is completely different from CSP to CSP and On-prem?
+
+CloudSecure uses a label-based, CSP-agnostic policy model. You write policies once using labels, and CloudSecure translates them to each CSP’s native enforcement:
+
+•	AWS: Security Groups and/or NACLs (configurable at NIC-level, subnet-level, or both)
+
+•	Azure: NSGs at NIC-level, subnet-level, or both; also Azure Firewall policies
+
+•	GCP: IP-based Firewall Rules
+
+•	On-Prem (Illumio Core): Host-based firewalls (iptables, WFP, IPFilter) via VEN agents
+
+The CSP obtains data from Flow Logs and resource lookups through API. It also pushes segmentation configs via API. On-Prem agents use a TLS connection to report telemetry and receive ACL/Firewall config changes.
+
+Key benefit: One policy language, multiple enforcement points. Write once, enforce everywhere — regardless of whether it’s AWS, Azure, GCP, or on-prem.
+
+
+
+What problem are we trying to solve in the cloud? Visibility into the cloud.
+
+The core problems:
+
+•	Visibility gap: We don’t have good inventory or understanding of what CMDB is reporting. CMDB network discovery only happens at intervals, so there are gaps. Illumio would provide continuous, API-driven resource discovery.
+
+•	Cross-cloud consistency: Centralized visibility and policy across AWS, Azure, GCP from one interface instead of managing each CSP independently.
+
+•	East-west traffic: Understanding lateral movement patterns and enforcing microsegmentation to contain breaches — the CSP-native tools don’t give us this cross-account, cross-cloud view.
+
+•	Compliance & audit trail: Centralized policy management with draft/provision workflows, change tracking, and exportable traffic data for ITRC standards.
+
+
+
+How does this work with managed services which sit outside the VPC on Google’s private network and behind our VPC Service Control configurations?
+
+This is a known limitation. CloudSecure’s visibility depends on where flow logs capture traffic:
+
+•	GCP: CloudSecure processes only VPC and Firewall flow logs. Managed services behind VPC Service Controls that don’t generate VPC-level flow logs will have limited or no visibility.
+
+•	Azure: PaaS offerings only log NSG/VNET traffic when a private endpoint is configured. Traffic to private endpoints can only be captured at the source VM, not the endpoint itself.
+
+•	AWS: CloudSecure reads from S3 buckets only. Managed services within VPC boundaries with flow logging enabled will be visible; services outside VPC boundaries will not.
+
+The documents show what permissions would be needed. For managed services that sit entirely on Google’s internal network (outside VPC), we would need to talk through with Illumio whether any alternative telemetry sources can provide visibility. This is a gap we should validate during the POC.
+
+
+
+How does this work with managed services which sit outside the VPC on googles private network and behind our VPC Service Control configurations?
+
+(Covered above — same question, additional context:)
+
+The documents show what permissions would be needed. Might have to talk through this one with vendor but would we have access to certain flows. During the POC, we should specifically test GCP managed services behind VPC-SC to see what telemetry CloudSecure can access.
+
+
+
+How does this work with IoC deployments?
+
+For container/IoC deployments:
+
+•	CloudSecure provides VPC-level visibility around EKS/AKS/GKE clusters through flow log ingestion.
+
+•	The Illumio cloud-operator (open-source Helm chart) can be deployed into clusters to stream resource and network traffic info to CloudSecure, and enforce Illumio policies as K8s NetworkPolicies.
+
+•	EKS Clusters/Nodegroups appear in inventory but won’t have flow data at pod level through CloudSecure alone.
+
+•	For deeper container visibility, Illumio Core’s container capabilities provide workload-level segmentation within the cluster via the PCE.
+
+
+
+ 
+
+Integration & Data Overlap
+
+What’s the overlap with Prisma / Cortex which is getting the same Data?
+
+There will be data overlap. This is the third security tool ingesting large amounts of CSP flow data (alongside Prisma/Cortex and Splunk). The tools serve different purposes:
+
+•	Prisma Cloud: CSPM, posture management, compliance, vulnerability scanning.
+
+•	CloudSecure: Microsegmentation, east-west policy enforcement, traffic visibility.
+
+•	Cortex/Splunk: SIEM/SOAR, detection and response, log aggregation.
+
+On ingesting from existing sources: We previously asked Illumio if they could ingest from Cortex/Prisma and were told they don’t support it. However, Illumio does have a native Splunk integration (Illumio App for Splunk on Splunkbase, plus TA-Illumio add-on) that can export enriched Illumio data TO Splunk. The data flow is: CloudSecure enriches raw CSP flow logs with labels and context, then can export enriched flows to an S3 bucket hourly for SIEM ingestion. This means Splunk/Cortex can consume Illumio-enriched data, but Illumio cannot consume from Splunk/Cortex as a source.
+
+The cost of triple-ingesting the same flow data is a valid concern. During the POC, we should quantify the incremental CSP data transfer costs to understand the real financial impact.
+
+
+
+Also, some data is being sent to Splunk. This will be the third security tool to get large amounts of data (flow logs) from CSPs.
+
+Acknowledged. This is a significant cost consideration. Options to mitigate:
+
+•	CloudSecure exports enriched (labeled/contextualized) flows to S3 hourly. We could potentially route this enriched data to Splunk instead of having Splunk also pull raw CSP flow logs independently.
+
+•	Evaluate whether Prisma’s flow data collection can be reduced if CloudSecure provides equivalent or better traffic visibility.
+
+•	The POC should include a cost analysis of incremental data transfer and storage costs.
+
+
+
+How will this fit into our cloud operating model as it is today?
+
+Thinking with GCP and wanting to use the native firewalls, this would solve some of the ITRC standards:
+
+•	Centrally managed rules: CloudSecure provides a single policy interface — rules are written once, provisioned to all affected enforcement points.
+
+•	Audit trail: All policy changes go through a draft/provision workflow. CloudSecure tracks all changes and provisioning status.
+
+•	Reporting: Traffic data exportable, policy enforcement status visible, provisioning errors tracked.
+
+•	Change management: The draft/provision model maps naturally to our ServiceNow approval flow — draft = change request, provision = implementation.
+
+•	IAM: The Illumio Cross Account Role (AWS) / “Illumio-CloudSecure-Access” AD app (Azure) / service account (GCP) model needs to be reviewed against our IAM governance standards.
+
+
+
+Non-Functional Requirements
+
+Cross-impacting projects impacting timelines
+
+Even though it’s not a request for infrastructure, the platform teams have high priority workloads. We need to confirm timelines won’t conflict with other high priority backlog items. Recommend a brief capacity check with platform leads before committing POC dates.
+
+
+
+Maintainability — who are the application owners?
+
+Illumio is owned by Cyber (Jeff Ostrzyzek). We do have some application teams with access to Illumio on-prem who can monitor inbound traffic for their apps. For CloudSecure:
+
+•	Policy authoring and provisioning: Illuminati Team (Cyber/Tech Ops)
+
+•	Application teams: Read-only visibility into their applications’ traffic patterns
+
+•	Operational support: Needs to be defined — who handles after-hours policy changes, incident response quarantine actions, etc.
+
+
+
+Typical Runtime hours — M-F 8-5pm: Is this just for the POC? If this product is purchased what would this look like?
+
+CloudSecure is SaaS running 24/7 with a 99.8% uptime SLA. It’s always on. The M-F 8-5 is presumably for POC staffing/support only. In production:
+
+•	The platform itself operates 24/7 with continuous flow ingestion and policy enforcement.
+
+•	Changes to rules and policy will have change-related procedures at all hours per our standard change management process.
+
+•	Illumio provides 24/7 support by phone (888-631-6354), email (support@illumio.com), and support portal.
+
+
+
+Capacity — how is this being properly ingested? I don’t see any storage capacity information about the fleet.
+
+CloudSecure is SaaS — Illumio manages all backend infrastructure. No on-prem capacity planning needed. Key limits:
+
+•	Traffic records older than 90 days are automatically purged from CloudSecure.
+
+•	Traffic page displays maximum 10,000 results (most recent flows). This is a display limit, not a data limit.
+
+•	Exported flows sent to your S3 bucket hourly are NOT subject to the 10,000 limit.
+
+•	Licensing is based on average billable workloads (30-day average), not storage volume.
+
+CSP-side capacity: We DO need to account for increased storage costs in our S3/Storage Blob/Pub Sub for flow log retention that Illumio reads from. The structure for CloudSecure is different from on-prem — it’s workload-based, not storage-based. This does not account for the data ingestion part on the CSP side.
+
+
+
+Security — what Firewall rules will need to be setup? Any whitelisting needed?
+
+Illumio Cloud uses TCP port 443 to access your flow logs. The Illumio control and data plane uses specific public IP addresses that need to be added to firewall allowed lists:
+
+•	AWS IPs: product-docs-repo.illumio.com/.../aws-flow-log-access-ip-addresses.html
+
+•	Azure IPs: product-docs-repo.illumio.com/.../azure-flow-log-access-illumio-cloud-ip-addresses.html
+
+•	GCP IPs: product-docs-repo.illumio.com/.../gcp-flow-log-access-ip-addresses.html
+
+Under most circumstances, explicit IP whitelisting is not required. However, if we have service control policies, VPC-SC, or similar restrictions that block external API access to storage, we’ll need to add Illumio’s IPs to allowlists. Illumio is SaaS-based so we’d need to ensure these IPs can reach our flow log storage.
+
+
+
+────────────────────────────────────────────────────────────
+
+Next Steps:
+
+•	Schedule POC scoping call with Illumio SE to get workload-based pricing estimate.
+
+•	Pull specific IP whitelisting requirements from the reference URLs above and submit firewall requests.
+
+•	Validate GCP managed services behind VPC-SC during POC to confirm visibility limitations.
+
+•	Coordinate with platform teams on POC timeline vs. existing backlog.
+
+•	Determine whether CloudSecure’s enriched flow exports to S3 can reduce duplicate SIEM ingestion costs.
+
+•	Decide: combined AGT (Existing + CloudSecure + Insights) or separate documents per Michael’s question.
+
+
+
+Let me know if you want to drill into any of these further or if I missed any questions from the thread.
+
+
+
+Robb
+
+RE: Illumio CloudSecure and Insights PoC ARB Questions and Discussion
+
+To: Kong Fang, Michael Sonstein, Jeff Greenwalde, Kyle Epps, Jeremy Wilhelm
+
+From: Robb
+
+Date: March 2026
+
+Kong / Michael — thanks for putting together the questions. Below are detailed answers to each item. I’ve pulled from Illumio’s product documentation, architecture briefs, and our internal context to give definitive answers where possible. Where vendor confirmation is still needed, I’ve noted it but kept it minimal.
+
+────────────────────────────────────────────────────────────
+
+Microsegmentation
+
+Provide micro segmentation? Is this needed? The CSP’s have already architected segmentation in their setup and deployments.
+
+Yes, and here’s why it’s needed beyond what CSPs provide natively:
+
+CSPs provide Security Groups (AWS), NSGs (Azure), and Firewall Rules (GCP) — but these are per-account, per-cloud controls with no cross-environment visibility or centralized management. Illumio CloudSecure doesn’t replace these; it uses them as enforcement points and adds a centralized orchestration layer on top.
+
+What CloudSecure actually does:
+
+•	Uses the CSP’s own native controls (SGs, NACLs, NSGs, Azure Firewall, GCP Firewall Rules) as enforcement points — no additional inline appliances.
+
+•	Provides a single pane of glass across all cloud accounts and CSPs for visibility into what’s communicating.
+
+•	Enables application-centric policy using labels (Role, App, Environment, Location) instead of IP-based rules, so policy follows workloads regardless of IP changes.
+
+•	Acts as a centralized management tool where Firewall/ACL/NSG changes can be monitored, reviewed, and pushed from one place instead of individually per account.
+
+•	Provides progressive enforcement: start in Visibility Only mode, then Selective Enforcement, then Full Enforcement — no prayer-based deployments.
+
+Bottom line: We know that at some point additional rules will be needed as workloads change. CloudSecure gives us the centralized brain to manage that across CSPs. Illumio could be our central management tool where changes can be monitored and applied consistently, with visibility into what’s communicating and the ability to troubleshoot.
+
+
+
+Visibility & Data Collection
+
+What information is being pulled? (Illumio visibility for resource types)
+
+Resource Metadata (Inventory): CloudSecure discovers all cloud resource types via CSP APIs — EC2 instances, RDS, Lambda, VPCs, subnets, security groups, load balancers, storage, and more across AWS, Azure, GCP, and OCI. Resource tags are collected and mapped to Illumio labels. Full list at: product-docs-repo.illumio.com/.../illumio-visibility-for-resource-types.html
+
+Flow Log Telemetry:
+
+•	AWS: VPC Flow Logs from S3 buckets. Fields ingested: srcaddr, srcport, dstaddr, dstport, protocol, action, bytes, start, packets, tcp-flags, interface-id, flow-direction, pkt-srcaddr, pkt-dstaddr.
+
+•	Azure: VNET Flow Logs, NSG Flow Logs, and Azure Firewall Network Rule logs from Storage Blobs.
+
+•	GCP: VPC Flow Logs and Firewall logs via Pub/Sub subscriptions and Log Router sinks.
+
+Batch Timing: The map ingests traffic flows every 10 minutes in 60-minute chunks. Exported enriched flows are batched every 60 minutes. Partial flow data from CSPs can take up to 40 minutes to retrieve. After initial onboarding there’s a 15-minute latency before traffic first appears, then updates every 2 minutes.
+
+
+
+What is a resource defined as? (CloudSecure context)
+
+A resource is any cloud object discovered from the CSP APIs/SDKs (e.g., AWS::EC2::Instance, Azure VirtualMachine). Illumio also defines resource categories to group types (e.g., VPCs fall under “Network Management”).
+
+•	Resources appear on the Inventory, Map, and Traffic pages once the account is onboarded.
+
+•	Policy can be written for resources that have enforcement point attachments (Security Groups for AWS, NSGs for Azure).
+
+•	Some resources appear for visibility only — EKS Clusters/Nodegroups and S3 buckets appear in inventory but won’t have flow data.
+
+•	Only EC2 instances, RDS DBClusters, RDS DBInstances, and Azure VMs get fully decorated flow data.
+
+•	Azure PaaS offerings only log NSG/VNET traffic when a private endpoint is configured.
+
+
+
+Have we done any estimated costs for data out? What’s the increase from what we have today? I’m going to obtain this via the POC.
+
+Illumio licensing is workload-based (average billable workloads over 30 days). The CloudSecure Usage page includes a workload calculator to model growth. Cost components include:
+
+•	Illumio license cost: Per-workload pricing, need count of cloud resources across all CSP accounts.
+
+•	CSP flow log storage: Enabling VPC/NSG/VNET flow logs generates data in your S3/Storage Blob/Pub Sub — standard CSP storage and data transfer rates apply.
+
+•	CSP data transfer: CloudSecure reads from your cloud storage via API (TCP 443). Data egress charges depend on volume and CSP pricing.
+
+•	No additional infrastructure: CloudSecure is SaaS — no on-prem servers or appliances needed.
+
+The POC will give us concrete numbers based on our actual workload count and flow volume.
+
+
+
+What about Prisma? How does it relate to cloud master / Lead Sheets?
+
+Prisma (CSPM) and CloudSecure (microsegmentation) are complementary, not overlapping:
+
+•	Prisma Cloud: Configuration posture management, compliance scanning, vulnerability detection, runtime protection. It answers: “Are my cloud resources configured correctly?”
+
+•	CloudSecure: Traffic visibility, microsegmentation policy, enforcement through native CSP controls. It answers: “What’s talking to what, and can I control it?”
+
+CloudSecure’s Insights page does surface some configuration insights (misconfigurations not adhering to best practices), but this supplements Prisma, not replaces it.
+
+
+
+What about the policy? Policy is maintained internally by Kubernetes; no out of scope.
+
+Correct — in-cluster Kubernetes network policy stays with K8s. CloudSecure doesn’t replace that. What it does provide:
+
+•	VPC/VNET-level visibility into traffic flowing in and out of EKS/AKS/GKE clusters.
+
+•	Security group enforcement controlling what can reach the cluster from outside.
+
+•	The Illumio cloud-operator (open-source Helm chart) can optionally stream cluster resource info to CloudSecure and enforce Illumio policies as K8s NetworkPolicies — but this would be additive to what we already have, not a replacement.
+
+
+
+How does this work with NGFW? (Palo Alto)
+
+Different layers, no conflict. Palo handles perimeter/north-south; CloudSecure manages east-west via cloud-native controls:
+
+•	CloudSecure programs: Security Groups, NACLs (AWS), NSGs (Azure), GCP Firewall Rules, and Azure Firewall policies.
+
+•	It does NOT program: Third-party firewalls like Palo Alto. These remain independently managed.
+
+•	For Azure, CloudSecure can write Azure Firewall policy (creates rule collection groups with “ICS.” prefix), which is Azure-native, not Palo.
+
+Traffic flow: hits Palo first at the perimeter, then CloudSecure-managed SGs/NSGs for east-west. The two operate at different enforcement points and should not conflict. We can confirm with both vendors to validate the layered approach.
+
+
+
+How is multi-region handled in configuration? We would ask that the service account needs for Illumio be accessible to the whole tenant/organization.
+
+CloudSecure handles multi-region natively:
+
+•	When onboarding an AWS account or Azure tenant/subscription, CloudSecure discovers resources across all regions within that account.
+
+•	The cross-account IAM role (AWS) or AD app registration “Illumio-CloudSecure-Access” (Azure) provides access across all regions.
+
+•	For GCP, onboarding can be done at the project, folder, or organization level.
+
+•	Flow logs do need to be configured per-region in each CSP (S3 bucket destinations for AWS, storage accounts for Azure, Pub/Sub topics for GCP).
+
+•	AWS best practice: Deploy a centralized log storage strategy with a single S3 bucket for all cross-VPC and cross-account flow logs.
+
+The service account/principal is scoped to the whole tenant/organization as requested — that’s the standard onboarding model.
+
+
+
+ 
+
+Insights (On-Prem & CDR)
+
+Insights — what are the requirements for agents?
+
+Illumio Insights in its current form is agentless for cloud workloads:
+
+•	Cloud: Insights uses the same API-based data as CloudSecure (flow logs, resource metadata). No agents required. It essentially uses the same data as CloudSecure (APIs), so no agents.
+
+•	On-Prem: Requires Illumio Core’s VEN (Virtual Enforcement Node) — a lightweight agent in the guest OS that collects telemetry and programs host-based firewalls (iptables/Linux, WFP/Windows).
+
+•	Insights Agent (AI feature): This is an AI-powered assistant within Insights — not a deployed agent. It enriches investigations using Microsoft Sentinel Data Lake, merging flows, resources, workloads, threat intel, user access, and vulnerability data.
+
+Since we don’t currently have Insights licensed, we intend to POC it this year. The AGT approvals need to cover both CloudSecure and Insights.
+
+
+
+Where do the agents need to run? Depending on the answers I’ll have more questions around how this aligns with our use of Managed services.
+
+Cloud (CloudSecure/Insights): No agents anywhere. Fully agentless via API connections to CSP flow log sources (S3, Storage Blob, Pub/Sub).
+
+On-Prem (Illumio Core): VEN agents on each managed workload — VMs, bare-metal servers, cloud instances. The PCE (Policy Compute Engine) can run as Illumio’s SaaS or on-prem.
+
+Managed Services (RDS, Lambda, EKS, etc.): No agents needed or possible. Visibility comes through flow log ingestion at the VPC boundary.
+
+
+
+MITRE ATT&CK & Google Front End
+
+MITRE ATT&CK Framework — how does this work within Insights? Google mappings?
+
+Illumio Insights maps threats to MITRE ATT&CK natively:
+
+•	Continuous background monitoring of flows and workload communication to detect anomalies.
+
+•	Threats are automatically mapped to MITRE ATT&CK tactics and techniques (lateral movement, data exfiltration, C2, etc.).
+
+•	Severity-ranked with MITRE technique IDs, helping prioritize response and reduce alert fatigue.
+
+•	One-click containment integrated with Illumio Segmentation for instant isolation of compromised workloads.
+
+Google Cloud MITRE mappings: GCP separately published native security control mappings to MITRE ATT&CK through the MITRE Engenuity Center for Threat-Informed Defense. These map GCP tools (Chronicle, Security Command Center) to ATT&CK techniques. Illumio’s MITRE mapping is complementary — it covers network-level/segmentation detections, while GCP’s mappings cover platform-level controls. Reference: cloud.google.com/blog/products/identity-security/announcing-mitre-attck-mappings-released-for-google-cloud-security-capabilities
+
+
+
+How does this work with the Google Front End Service?
+
+CloudSecure communicates with GCP through standard HTTPS (TCP 443) API endpoints, which are fronted by Google Front End (GFE) for TLS termination. Specifically:
+
+•	Flow log collection uses Pub/Sub subscriptions. CloudSecure creates two roles with bindings for pubsub.subscriptions.consume, create, and delete permissions.
+
+•	Resource discovery uses GCP APIs through the onboarded service account.
+
+•	Illumio’s control plane uses specific public IP addresses to reach GCP (documented in the GCP Flow Log Access IP Addresses reference).
+
+The GFE encryption-in-transit model should be transparent to CloudSecure since it’s using standard authenticated API calls. Reference: cloud.google.com/security/encryption-in-transit
+
+
+
+Segmentation Policy & Network Architecture
+
+How does this segmentation work on a global network which is completely different from CSP to CSP and On-prem?
+
+CloudSecure uses a label-based, CSP-agnostic policy model. You write policies once using labels, and CloudSecure translates them to each CSP’s native enforcement:
+
+•	AWS: Security Groups and/or NACLs (configurable at NIC-level, subnet-level, or both)
+
+•	Azure: NSGs at NIC-level, subnet-level, or both; also Azure Firewall policies
+
+•	GCP: IP-based Firewall Rules
+
+•	On-Prem (Illumio Core): Host-based firewalls (iptables, WFP, IPFilter) via VEN agents
+
+The CSP obtains data from Flow Logs and resource lookups through API. It also pushes segmentation configs via API. On-Prem agents use a TLS connection to report telemetry and receive ACL/Firewall config changes.
+
+Key benefit: One policy language, multiple enforcement points. Write once, enforce everywhere — regardless of whether it’s AWS, Azure, GCP, or on-prem.
+
+
+
+What problem are we trying to solve in the cloud? Visibility into the cloud.
+
+The core problems:
+
+•	Visibility gap: We don’t have good inventory or understanding of what CMDB is reporting. CMDB network discovery only happens at intervals, so there are gaps. Illumio would provide continuous, API-driven resource discovery.
+
+•	Cross-cloud consistency: Centralized visibility and policy across AWS, Azure, GCP from one interface instead of managing each CSP independently.
+
+•	East-west traffic: Understanding lateral movement patterns and enforcing microsegmentation to contain breaches — the CSP-native tools don’t give us this cross-account, cross-cloud view.
+
+•	Compliance & audit trail: Centralized policy management with draft/provision workflows, change tracking, and exportable traffic data for ITRC standards.
+
+
+
+How does this work with managed services which sit outside the VPC on Google’s private network and behind our VPC Service Control configurations?
+
+This is a known limitation. CloudSecure’s visibility depends on where flow logs capture traffic:
+
+•	GCP: CloudSecure processes only VPC and Firewall flow logs. Managed services behind VPC Service Controls that don’t generate VPC-level flow logs will have limited or no visibility.
+
+•	Azure: PaaS offerings only log NSG/VNET traffic when a private endpoint is configured. Traffic to private endpoints can only be captured at the source VM, not the endpoint itself.
+
+•	AWS: CloudSecure reads from S3 buckets only. Managed services within VPC boundaries with flow logging enabled will be visible; services outside VPC boundaries will not.
+
+The documents show what permissions would be needed. For managed services that sit entirely on Google’s internal network (outside VPC), we would need to talk through with Illumio whether any alternative telemetry sources can provide visibility. This is a gap we should validate during the POC.
+
+
+
+How does this work with managed services which sit outside the VPC on googles private network and behind our VPC Service Control configurations?
+
+(Covered above — same question, additional context:)
+
+The documents show what permissions would be needed. Might have to talk through this one with vendor but would we have access to certain flows. During the POC, we should specifically test GCP managed services behind VPC-SC to see what telemetry CloudSecure can access.
+
+
+
+How does this work with IoC deployments?
+
+For container/IoC deployments:
+
+•	CloudSecure provides VPC-level visibility around EKS/AKS/GKE clusters through flow log ingestion.
+
+•	The Illumio cloud-operator (open-source Helm chart) can be deployed into clusters to stream resource and network traffic info to CloudSecure, and enforce Illumio policies as K8s NetworkPolicies.
+
+•	EKS Clusters/Nodegroups appear in inventory but won’t have flow data at pod level through CloudSecure alone.
+
+•	For deeper container visibility, Illumio Core’s container capabilities provide workload-level segmentation within the cluster via the PCE.
+
+
+
+ 
+
+Integration & Data Overlap
+
+What’s the overlap with Prisma / Cortex which is getting the same Data?
+
+There will be data overlap. This is the third security tool ingesting large amounts of CSP flow data (alongside Prisma/Cortex and Splunk). The tools serve different purposes:
+
+•	Prisma Cloud: CSPM, posture management, compliance, vulnerability scanning.
+
+•	CloudSecure: Microsegmentation, east-west policy enforcement, traffic visibility.
+
+•	Cortex/Splunk: SIEM/SOAR, detection and response, log aggregation.
+
+On ingesting from existing sources: We previously asked Illumio if they could ingest from Cortex/Prisma and were told they don’t support it. However, Illumio does have a native Splunk integration (Illumio App for Splunk on Splunkbase, plus TA-Illumio add-on) that can export enriched Illumio data TO Splunk. The data flow is: CloudSecure enriches raw CSP flow logs with labels and context, then can export enriched flows to an S3 bucket hourly for SIEM ingestion. This means Splunk/Cortex can consume Illumio-enriched data, but Illumio cannot consume from Splunk/Cortex as a source.
+
+The cost of triple-ingesting the same flow data is a valid concern. During the POC, we should quantify the incremental CSP data transfer costs to understand the real financial impact.
+
+
+
+Also, some data is being sent to Splunk. This will be the third security tool to get large amounts of data (flow logs) from CSPs.
+
+Acknowledged. This is a significant cost consideration. Options to mitigate:
+
+•	CloudSecure exports enriched (labeled/contextualized) flows to S3 hourly. We could potentially route this enriched data to Splunk instead of having Splunk also pull raw CSP flow logs independently.
+
+•	Evaluate whether Prisma’s flow data collection can be reduced if CloudSecure provides equivalent or better traffic visibility.
+
+•	The POC should include a cost analysis of incremental data transfer and storage costs.
+
+
+
+How will this fit into our cloud operating model as it is today?
+
+Thinking with GCP and wanting to use the native firewalls, this would solve some of the ITRC standards:
+
+•	Centrally managed rules: CloudSecure provides a single policy interface — rules are written once, provisioned to all affected enforcement points.
+
+•	Audit trail: All policy changes go through a draft/provision workflow. CloudSecure tracks all changes and provisioning status.
+
+•	Reporting: Traffic data exportable, policy enforcement status visible, provisioning errors tracked.
+
+•	Change management: The draft/provision model maps naturally to our ServiceNow approval flow — draft = change request, provision = implementation.
+
+•	IAM: The Illumio Cross Account Role (AWS) / “Illumio-CloudSecure-Access” AD app (Azure) / service account (GCP) model needs to be reviewed against our IAM governance standards.
+
+
+
+Non-Functional Requirements
+
+Cross-impacting projects impacting timelines
+
+Even though it’s not a request for infrastructure, the platform teams have high priority workloads. We need to confirm timelines won’t conflict with other high priority backlog items. Recommend a brief capacity check with platform leads before committing POC dates.
+
+
+
+Maintainability — who are the application owners?
+
+Illumio is owned by Cyber (Jeff Ostrzyzek). We do have some application teams with access to Illumio on-prem who can monitor inbound traffic for their apps. For CloudSecure:
+
+•	Policy authoring and provisioning: Illuminati Team (Cyber/Tech Ops)
+
+•	Application teams: Read-only visibility into their applications’ traffic patterns
+
+•	Operational support: Needs to be defined — who handles after-hours policy changes, incident response quarantine actions, etc.
+
+
+
+Typical Runtime hours — M-F 8-5pm: Is this just for the POC? If this product is purchased what would this look like?
+
+CloudSecure is SaaS running 24/7 with a 99.8% uptime SLA. It’s always on. The M-F 8-5 is presumably for POC staffing/support only. In production:
+
+•	The platform itself operates 24/7 with continuous flow ingestion and policy enforcement.
+
+•	Changes to rules and policy will have change-related procedures at all hours per our standard change management process.
+
+•	Illumio provides 24/7 support by phone (888-631-6354), email (support@illumio.com), and support portal.
+
+
+
+Capacity — how is this being properly ingested? I don’t see any storage capacity information about the fleet.
+
+CloudSecure is SaaS — Illumio manages all backend infrastructure. No on-prem capacity planning needed. Key limits:
+
+•	Traffic records older than 90 days are automatically purged from CloudSecure.
+
+•	Traffic page displays maximum 10,000 results (most recent flows). This is a display limit, not a data limit.
+
+•	Exported flows sent to your S3 bucket hourly are NOT subject to the 10,000 limit.
+
+•	Licensing is based on average billable workloads (30-day average), not storage volume.
+
+CSP-side capacity: We DO need to account for increased storage costs in our S3/Storage Blob/Pub Sub for flow log retention that Illumio reads from. The structure for CloudSecure is different from on-prem — it’s workload-based, not storage-based. This does not account for the data ingestion part on the CSP side.
+
+
+
+Security — what Firewall rules will need to be setup? Any whitelisting needed?
+
+Illumio Cloud uses TCP port 443 to access your flow logs. The Illumio control and data plane uses specific public IP addresses that need to be added to firewall allowed lists:
+
+•	AWS IPs: product-docs-repo.illumio.com/.../aws-flow-log-access-ip-addresses.html
+
+•	Azure IPs: product-docs-repo.illumio.com/.../azure-flow-log-access-illumio-cloud-ip-addresses.html
+
+•	GCP IPs: product-docs-repo.illumio.com/.../gcp-flow-log-access-ip-addresses.html
+
+Under most circumstances, explicit IP whitelisting is not required. However, if we have service control policies, VPC-SC, or similar restrictions that block external API access to storage, we’ll need to add Illumio’s IPs to allowlists. Illumio is SaaS-based so we’d need to ensure these IPs can reach our flow log storage.
+
+
+
+────────────────────────────────────────────────────────────
+
+Next Steps:
+
+•	Schedule POC scoping call with Illumio SE to get workload-based pricing estimate.
+
+•	Pull specific IP whitelisting requirements from the reference URLs above and submit firewall requests.
+
+•	Validate GCP managed services behind VPC-SC during POC to confirm visibility limitations.
+
+•	Coordinate with platform teams on POC timeline vs. existing backlog.
+
+•	Determine whether CloudSecure’s enriched flow exports to S3 can reduce duplicate SIEM ingestion costs.
+
+•	Decide: combined AGT (Existing + CloudSecure + Insights) or separate documents per Michael’s question.
+
+
+
+Let me know if you want to drill into any of these further or if I missed any questions from the thread.
+
+
+
+Robb
+
+
+
+
+# Illumio POC Meeting Notes — Supporting Documentation
+## 03.05.2026 Meeting Follow-Up
+### Reference Links for Each Concern Discussed
+
+---
+
+## 1. Illumio POC Overview and Objectives
+
+### Illumio Product Functionality (Agentless architecture, VPC logs, Cloud Secure + Insights, MITRE ATT&CK)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Agentless architecture overview | Illumio Architecture Brief (PDF) | https://cdn.prod.website-files.com/63e25fb5e66132e6387676dc/6463a084002e7328711db5e0_illumio-architecture.pdf |
+| CloudSecure agentless model explained | The New Stack — Illumio Adds Agentless Security | https://thenewstack.io/illumio-adds-agentless-security-with-cloud-secure/ |
+| VPC flow log integration per CSP | Set Up Flow Logs in Your CSP Environment | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| Grant flow log access (permissions created) | Grant Flow Log Access to Your CSPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/grant-flow-log-access-to-your-csps.html |
+| Insights — AI-powered CDR & MITRE ATT&CK mapping | Illumio Insights Agent Documentation | https://product-docs-repo.illumio.com/Tech-Docs/UC_In_App_Help/Onboarding/Free_Trial_Get_Started/out/en/onboarding-sentinel-data-lake-and-secure-marketplace--private-preview-/illumio-insights-agent.html |
+| Insights — threat detection and MITRE mapping | Help Net Security — Illumio Insights Agent Launch | https://www.helpnetsecurity.com/2025/10/21/illumio-insights-agent/ |
+| Insights — Illumio Blog Announcement | Meet Insights Agent Blog Post | https://www.illumio.com/blog/meet-insights-agent-your-ai-teammate-for-threat-detection-and-response |
+| CloudSecure policy model overview | Writing Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+
+### POC Goals and Stakeholder Questions (Gap Illumio fills vs. Prisma/Splunk)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure vs. native CSP controls value | Illumio CloudSecure Technical Brief | https://www.illumio.com/resource-center/illumio-cloudsecure-technical-brief |
+| What CloudSecure does that Prisma doesn't | Illumio Blog — Contain Cloud Attacks with ZTS | https://www.illumio.com/blog/illumio-cloudsecure-contain-cloud-attacks-proactive-segmentation-policy-controls |
+| Full CloudSecure User Guide (PDF) | CloudSecure User Guide | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/PDFs/CloudSecure_User_Guide.pdf |
+
+### Cross-Environment Visibility (AWS, GCP, Azure, On-Prem)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Unified visibility across hybrid multi-cloud | Illumio Architecture Overview Page | https://www.illumio.com/resource-center/illumio-architecture |
+| Consistent visibility with/without agents | Achieve Visibility Across On-Prem and Cloud | https://www.illumio.com/resource-center/achieve-visibility-across-on-premises-and-cloud-environments |
+| Resource types supported per CSP | Illumio Visibility for Resource Types | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/visualize/illumio-visibility-for-resource-types.html |
+| Policy enforcement per resource type | Policy Enforcement and Resource Types | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/policy-enforcement-and-resource-types.html |
+| Cloud traffic monitoring blog (single pane of glass) | Cloud Traffic Monitoring and Control | https://www.illumio.com/blog/cloud-security-traffic-monitoring-control |
+
+### Use Case and POC Scope Planning (Non-prod/sandbox testing)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure free 30-day trial (sandbox option) | CloudSecure Product Page | https://www.illumio.com/products/illumio-cloudsecure |
+| Progressive enforcement (Visibility Only → Selective → Full) | Illumio Policy Model | https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html |
+| What to Expect Starting Out with Microsegmentation | Illumio Blog — Getting Started | https://www.illumio.com/blog/what-to-expect-when-starting-out-with-microsegmentation |
+
+---
+
+## 2. API Call Limitations and Data Duplication Challenges
+
+### API Call Saturation (Prisma and other tools consuming all API calls)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure reads from storage (S3/Blob/PubSub), NOT direct CSP APIs | Set Up Flow Logs in CSP Environment | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| AWS: CloudSecure reads from S3 buckets only | Grant Flow Log Access (AWS limitations) | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/grant-flow-log-access-to-your-csps.html |
+| Batch ingestion every 10 min in 60-min chunks (not real-time API polling) | AWS Onboarding Prerequisites | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/aws-onboarding-workflow/prerequisites-for-onboarding-aws.html |
+| Illumio REST API rate limit: 500 requests/min per session | REST API Limits (Core) | https://docs.illumio.com/core/22.1/Content/Guides/rest-api/overview/rest-api-limits.htm |
+| Terraform provider has built-in 125 req/min rate limit + backoff | Illumio Core Terraform Provider Docs | https://registry.terraform.io/providers/illumio/illumio-core/latest/docs |
+
+**Key point for Kyle's concern:** CloudSecure does NOT aggressively query CSP APIs in real-time like Prisma does. Instead, it reads flow logs from cloud storage (S3, Storage Blob, Pub/Sub) on a batch schedule (every 10 minutes). This fundamentally different architecture means it should NOT contribute to the API call saturation problem Kyle described.
+
+### Data Duplication Across Tools (Splunk, Prisma, Illumio all ingesting flow logs)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure Connector — enriched flow export to S3 hourly | Connector Documentation | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html |
+| Illumio App for Splunk (enriched data integration) | Illumio App for Splunk on Splunkbase | https://splunkbase.splunk.com/app/3658 |
+| Illumio TA for Splunk (data ingestion add-on) | Illumio TA GitHub | https://github.com/illumio-shield/illumio-splunk-ta |
+| Illumio + Splunk integration overview | Illumio Splunk Integration Blog | https://www.illumio.com/blog/splunk-integration |
+| SIEM integration via syslog (JSON/CEF/LEEF) | SIEM Integration for Events | https://product-docs-repo.illumio.com/Tech-Docs/Core/22.2/Admin/out/en/events-administration/events-setup/siem-integration-for-events.html |
+| Centralized log storage recommendation (single S3 bucket) | Set Up Flow Logs — AWS best practice | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| S3 bucket log export details | Illumio Blog — S3 Bucket Log Export | https://www.illumio.com/blog/s3-buckets-log-export |
+
+**Key point for Kyle's log broker concept:** CloudSecure reads from S3/Blob/PubSub storage — if we centralize flow logs to a single S3 bucket per CSP, all tools (Splunk, Prisma, CloudSecure) could read from the same storage. CloudSecure also exports ENRICHED (labeled/contextualized) flows to S3 hourly, which could feed Splunk instead of Splunk pulling raw CSP logs separately. This is effectively a brokered model.
+
+### Tool Query Behavior and Scalability Issues (Prisma querying all regions real-time)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure ingestion model (storage-based, not API polling) | Connector — Batch Timing Details | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html |
+| Flow log access IP addresses (outbound only, port 443) | AWS Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/aws-flow-log-access-ip-addresses.html |
+| Azure Flow Log Access IPs | Azure Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/azure-flow-log-access-illumio-cloud-ip-addresses.html |
+| GCP Flow Log Access IPs | GCP Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/gcp-flow-log-access-ip-addresses.html |
+
+**Key point:** Unlike Prisma's approach of querying CSP APIs directly across all regions in real-time, CloudSecure reads from storage objects. The CSP writes flow logs to storage; CloudSecure reads them. This is a fundamentally less aggressive pattern that avoids the API saturation issues Kyle described.
+
+---
+
+## 3. Automation and Infrastructure-as-Code (IaC) Requirements
+
+### Automation Goals (End-to-end automated deployments, no manual intervention)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure Terraform Provider (official) | CloudSecure Terraform Provider Docs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html |
+| CloudSecure Terraform Provider (GitHub) | GitHub — terraform-provider-illumio-cloudsecure | https://github.com/illumio/terraform-provider-illumio-cloudsecure |
+| CloudSecure Terraform Provider (Registry) | Terraform Registry — illumio-cloudsecure | https://registry.terraform.io/providers/illumio/illumio-cloudsecure |
+| Illumio Core Terraform Provider (PCE) | Terraform Registry — illumio-core | https://registry.terraform.io/providers/illumio/illumio-core/latest/docs |
+| Illumio Core Terraform Provider (GitHub) | GitHub — terraform-provider-illumio-core | https://github.com/illumio/terraform-provider-illumio-core/blob/main/docs/index.md |
+
+### Integration with IaC Tools (Terraform support for rule creation and auditing)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Terraform supports: applications, deployments, tag-to-label mappings | CloudSecure Terraform Provider Docs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html |
+| Terraform modules for onboarding (Azure, AWS flow logs) | CloudSecure Terraform Source | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-source.html |
+| REST API for programmatic access (all PCE operations) | REST API Documentation Overview | https://docs.illumio.com/core/22.1/Content/Guides/rest-api/overview/rest-api-limits.htm |
+| IaC patterns for automating controls (CTO quote) | The New Stack — CloudSecure Launch | https://thenewstack.io/illumio-adds-agentless-security-with-cloud-secure/ |
+
+**Key point for Kyle's concern:** Illumio supports Terraform natively with two providers — `illumio-cloudsecure` for cloud resources and `illumio-core` for PCE/on-prem. Applications, deployments, label mappings, and onboarding can all be managed as code. The Terraform provider also handles draft/provision workflow with a separate provisioning binary. However, not all PCE APIs are implemented as Terraform resources yet — this is an area to validate during POC for our specific automation requirements.
+
+### Policy Inheritance and Tagging (Auto-policy based on app tags)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Label-based policy model (RALE labels) | Illumio Policy Model | https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html |
+| Cloud tag to Illumio label mapping | Unified Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/unified-policy.html |
+| Application policy writing (rules using labels) | Writing Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Policy enforcement points per CSP | Policy Preferences | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer/policy-preferences.html |
+
+### Standardization and Pre-Approved Policies (Auto-apply baseline firewall policies)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Organization vs. Application policy | Organization Policy vs Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Show Impact (preview policy before provisioning) | Writing Application Policy — Show Impact | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Draft/Provision workflow (review before apply) | Policy Provisioning | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+
+---
+
+## 4. Prioritization and Project Timing
+
+### Project Backlog and Competing Priorities (25 active projects, 10 more ready, M&A impact)
+
+*No Illumio-specific documentation needed — this is an internal prioritization discussion. However, for POC resource requirements:*
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure is SaaS — no infrastructure deployment needed | CloudSecure Product Page | https://www.illumio.com/products/illumio-cloudsecure |
+| Free 30-day trial available (low-friction start) | CloudSecure Trial | https://www.illumio.com/products/illumio-cloudsecure |
+| Illumio SLA: 99.8% uptime | Illumio Architecture Brief | https://cdn.prod.website-files.com/63e25fb5e66132e6387676dc/6463a084002e7328711db5e0_illumio-architecture.pdf |
+
+### Budgetary Planning (POC to gather numbers for following year)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Usage and licensing model (workload-based) | Usage Page Documentation | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/licensing/usage.html |
+| Illumio Insights on AWS Marketplace | AWS Marketplace — Illumio Insights | https://aws.amazon.com/marketplace/pp/prodview-rqpzqgqxhmm24 |
+
+---
+
+## 5. Follow-Up Tasks — Supporting References
+
+### POC Documentation Review (Jeremy)
+- Full CloudSecure User Guide: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/PDFs/CloudSecure_User_Guide.pdf
+- CloudSecure Documentation Portal: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/index-en.html
+- Alternate Docs Site: https://docs.illumio.com/cloudsecure/Content/Home.htm
+
+### Cortex API Query Issue Investigation (Lee)
+- CloudSecure reads from storage NOT direct API calls — this should not contribute to the API saturation issue
+- Illumio REST API rate limit: 500 req/min per session
+- Terraform provider built-in rate limit: 125 req/min with backoff
+
+### POC Use Case Preparation (Michael)
+- Policy Model (progressive enforcement): https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html
+- CloudSecure Demo: https://www.illumio.com/resource-center/illumio-cloudsecure-demo
+
+### IaC Automation Requirement Clarification (Kong)
+- CloudSecure Terraform Provider: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html
+- Illumio Core Terraform Provider: https://registry.terraform.io/providers/illumio/illumio-core/latest/docs
+- CloudSecure Terraform on GitHub: https://github.com/illumio/terraform-provider-illumio-cloudsecure
+
+### Log Broker Solution Exploration (Kong)
+- CloudSecure reads from S3/Blob/PubSub (already a brokered model): https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html
+- Enriched flow export to S3 hourly: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html
+- Centralized S3 bucket recommendation (AWS): Same flow log setup page above
+- Illumio S3 log export deep dive: https://www.illumio.com/blog/s3-buckets-log-export
+# Illumio POC Meeting Notes — Supporting Documentation
+## 03.05.2026 Meeting Follow-Up
+### Reference Links for Each Concern Discussed
+
+---
+
+## 1. Illumio POC Overview and Objectives
+
+### Illumio Product Functionality (Agentless architecture, VPC logs, Cloud Secure + Insights, MITRE ATT&CK)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Agentless architecture overview | Illumio Architecture Brief (PDF) | https://cdn.prod.website-files.com/63e25fb5e66132e6387676dc/6463a084002e7328711db5e0_illumio-architecture.pdf |
+| CloudSecure agentless model explained | The New Stack — Illumio Adds Agentless Security | https://thenewstack.io/illumio-adds-agentless-security-with-cloud-secure/ |
+| VPC flow log integration per CSP | Set Up Flow Logs in Your CSP Environment | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| Grant flow log access (permissions created) | Grant Flow Log Access to Your CSPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/grant-flow-log-access-to-your-csps.html |
+| Insights — AI-powered CDR & MITRE ATT&CK mapping | Illumio Insights Agent Documentation | https://product-docs-repo.illumio.com/Tech-Docs/UC_In_App_Help/Onboarding/Free_Trial_Get_Started/out/en/onboarding-sentinel-data-lake-and-secure-marketplace--private-preview-/illumio-insights-agent.html |
+| Insights — threat detection and MITRE mapping | Help Net Security — Illumio Insights Agent Launch | https://www.helpnetsecurity.com/2025/10/21/illumio-insights-agent/ |
+| Insights — Illumio Blog Announcement | Meet Insights Agent Blog Post | https://www.illumio.com/blog/meet-insights-agent-your-ai-teammate-for-threat-detection-and-response |
+| CloudSecure policy model overview | Writing Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+
+### POC Goals and Stakeholder Questions (Gap Illumio fills vs. Prisma/Splunk)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure vs. native CSP controls value | Illumio CloudSecure Technical Brief | https://www.illumio.com/resource-center/illumio-cloudsecure-technical-brief |
+| What CloudSecure does that Prisma doesn't | Illumio Blog — Contain Cloud Attacks with ZTS | https://www.illumio.com/blog/illumio-cloudsecure-contain-cloud-attacks-proactive-segmentation-policy-controls |
+| Full CloudSecure User Guide (PDF) | CloudSecure User Guide | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/PDFs/CloudSecure_User_Guide.pdf |
+
+### Cross-Environment Visibility (AWS, GCP, Azure, On-Prem)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Unified visibility across hybrid multi-cloud | Illumio Architecture Overview Page | https://www.illumio.com/resource-center/illumio-architecture |
+| Consistent visibility with/without agents | Achieve Visibility Across On-Prem and Cloud | https://www.illumio.com/resource-center/achieve-visibility-across-on-premises-and-cloud-environments |
+| Resource types supported per CSP | Illumio Visibility for Resource Types | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/visualize/illumio-visibility-for-resource-types.html |
+| Policy enforcement per resource type | Policy Enforcement and Resource Types | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/policy-enforcement-and-resource-types.html |
+| Cloud traffic monitoring blog (single pane of glass) | Cloud Traffic Monitoring and Control | https://www.illumio.com/blog/cloud-security-traffic-monitoring-control |
+
+### Use Case and POC Scope Planning (Non-prod/sandbox testing)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure free 30-day trial (sandbox option) | CloudSecure Product Page | https://www.illumio.com/products/illumio-cloudsecure |
+| Progressive enforcement (Visibility Only → Selective → Full) | Illumio Policy Model | https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html |
+| What to Expect Starting Out with Microsegmentation | Illumio Blog — Getting Started | https://www.illumio.com/blog/what-to-expect-when-starting-out-with-microsegmentation |
+
+---
+
+## 2. API Call Limitations and Data Duplication Challenges
+
+### API Call Saturation (Prisma and other tools consuming all API calls)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure reads from storage (S3/Blob/PubSub), NOT direct CSP APIs | Set Up Flow Logs in CSP Environment | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| AWS: CloudSecure reads from S3 buckets only | Grant Flow Log Access (AWS limitations) | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/grant-flow-log-access-to-your-csps.html |
+| Batch ingestion every 10 min in 60-min chunks (not real-time API polling) | AWS Onboarding Prerequisites | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/aws-onboarding-workflow/prerequisites-for-onboarding-aws.html |
+| Illumio REST API rate limit: 500 requests/min per session | REST API Limits (Core) | https://docs.illumio.com/core/22.1/Content/Guides/rest-api/overview/rest-api-limits.htm |
+| Terraform provider has built-in 125 req/min rate limit + backoff | Illumio Core Terraform Provider Docs | https://registry.terraform.io/providers/illumio/illumio-core/latest/docs |
+
+**Key point for Kyle's concern:** CloudSecure does NOT aggressively query CSP APIs in real-time like Prisma does. Instead, it reads flow logs from cloud storage (S3, Storage Blob, Pub/Sub) on a batch schedule (every 10 minutes). This fundamentally different architecture means it should NOT contribute to the API call saturation problem Kyle described.
+
+### Data Duplication Across Tools (Splunk, Prisma, Illumio all ingesting flow logs)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure Connector — enriched flow export to S3 hourly | Connector Documentation | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html |
+| Illumio App for Splunk (enriched data integration) | Illumio App for Splunk on Splunkbase | https://splunkbase.splunk.com/app/3658 |
+| Illumio TA for Splunk (data ingestion add-on) | Illumio TA GitHub | https://github.com/illumio-shield/illumio-splunk-ta |
+| Illumio + Splunk integration overview | Illumio Splunk Integration Blog | https://www.illumio.com/blog/splunk-integration |
+| SIEM integration via syslog (JSON/CEF/LEEF) | SIEM Integration for Events | https://product-docs-repo.illumio.com/Tech-Docs/Core/22.2/Admin/out/en/events-administration/events-setup/siem-integration-for-events.html |
+| Centralized log storage recommendation (single S3 bucket) | Set Up Flow Logs — AWS best practice | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html |
+| S3 bucket log export details | Illumio Blog — S3 Bucket Log Export | https://www.illumio.com/blog/s3-buckets-log-export |
+
+**Key point for Kyle's log broker concept:** CloudSecure reads from S3/Blob/PubSub storage — if we centralize flow logs to a single S3 bucket per CSP, all tools (Splunk, Prisma, CloudSecure) could read from the same storage. CloudSecure also exports ENRICHED (labeled/contextualized) flows to S3 hourly, which could feed Splunk instead of Splunk pulling raw CSP logs separately. This is effectively a brokered model.
+
+### Tool Query Behavior and Scalability Issues (Prisma querying all regions real-time)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure ingestion model (storage-based, not API polling) | Connector — Batch Timing Details | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html |
+| Flow log access IP addresses (outbound only, port 443) | AWS Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/aws-flow-log-access-ip-addresses.html |
+| Azure Flow Log Access IPs | Azure Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/azure-flow-log-access-illumio-cloud-ip-addresses.html |
+| GCP Flow Log Access IPs | GCP Flow Log Access IPs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/reference/gcp-flow-log-access-ip-addresses.html |
+
+**Key point:** Unlike Prisma's approach of querying CSP APIs directly across all regions in real-time, CloudSecure reads from storage objects. The CSP writes flow logs to storage; CloudSecure reads them. This is a fundamentally less aggressive pattern that avoids the API saturation issues Kyle described.
+
+---
+
+## 3. Automation and Infrastructure-as-Code (IaC) Requirements
+
+### Automation Goals (End-to-end automated deployments, no manual intervention)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure Terraform Provider (official) | CloudSecure Terraform Provider Docs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html |
+| CloudSecure Terraform Provider (GitHub) | GitHub — terraform-provider-illumio-cloudsecure | https://github.com/illumio/terraform-provider-illumio-cloudsecure |
+| CloudSecure Terraform Provider (Registry) | Terraform Registry — illumio-cloudsecure | https://registry.terraform.io/providers/illumio/illumio-cloudsecure |
+| Illumio Core Terraform Provider (PCE) | Terraform Registry — illumio-core | https://registry.terraform.io/providers/illumio/illumio-core/latest/docs |
+| Illumio Core Terraform Provider (GitHub) | GitHub — terraform-provider-illumio-core | https://github.com/illumio/terraform-provider-illumio-core/blob/main/docs/index.md |
+
+### Integration with IaC Tools (Terraform support for rule creation and auditing)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Terraform supports: applications, deployments, tag-to-label mappings | CloudSecure Terraform Provider Docs | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html |
+| Terraform modules for onboarding (Azure, AWS flow logs) | CloudSecure Terraform Source | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-source.html |
+| REST API for programmatic access (all PCE operations) | REST API Documentation Overview | https://docs.illumio.com/core/22.1/Content/Guides/rest-api/overview/rest-api-limits.htm |
+| IaC patterns for automating controls (CTO quote) | The New Stack — CloudSecure Launch | https://thenewstack.io/illumio-adds-agentless-security-with-cloud-secure/ |
+
+**Key point for Kyle's concern:** Illumio supports Terraform natively with two providers — `illumio-cloudsecure` for cloud resources and `illumio-core` for PCE/on-prem. Applications, deployments, label mappings, and onboarding can all be managed as code. The Terraform provider also handles draft/provision workflow with a separate provisioning binary. However, not all PCE APIs are implemented as Terraform resources yet — this is an area to validate during POC for our specific automation requirements.
+
+### Policy Inheritance and Tagging (Auto-policy based on app tags)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Label-based policy model (RALE labels) | Illumio Policy Model | https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html |
+| Cloud tag to Illumio label mapping | Unified Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/unified-policy.html |
+| Application policy writing (rules using labels) | Writing Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Policy enforcement points per CSP | Policy Preferences | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer/policy-preferences.html |
+
+### Standardization and Pre-Approved Policies (Auto-apply baseline firewall policies)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Organization vs. Application policy | Organization Policy vs Application Policy | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Show Impact (preview policy before provisioning) | Writing Application Policy — Show Impact | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+| Draft/Provision workflow (review before apply) | Policy Provisioning | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/policy/organization-policy-versus-application-policy/writing-application-policy.html |
+
+---
+
+## 4. Prioritization and Project Timing
+
+### Project Backlog and Competing Priorities (25 active projects, 10 more ready, M&A impact)
+
+*No Illumio-specific documentation needed — this is an internal prioritization discussion. However, for POC resource requirements:*
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| CloudSecure is SaaS — no infrastructure deployment needed | CloudSecure Product Page | https://www.illumio.com/products/illumio-cloudsecure |
+| Free 30-day trial available (low-friction start) | CloudSecure Trial | https://www.illumio.com/products/illumio-cloudsecure |
+| Illumio SLA: 99.8% uptime | Illumio Architecture Brief | https://cdn.prod.website-files.com/63e25fb5e66132e6387676dc/6463a084002e7328711db5e0_illumio-architecture.pdf |
+
+### Budgetary Planning (POC to gather numbers for following year)
+
+| Concern | Supporting Document | URL |
+|---|---|---|
+| Usage and licensing model (workload-based) | Usage Page Documentation | https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/licensing/usage.html |
+| Illumio Insights on AWS Marketplace | AWS Marketplace — Illumio Insights | https://aws.amazon.com/marketplace/pp/prodview-rqpzqgqxhmm24 |
+
+---
+
+## 5. Follow-Up Tasks — Supporting References
+
+### POC Documentation Review (Jeremy)
+- Full CloudSecure User Guide: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/PDFs/CloudSecure_User_Guide.pdf
+- CloudSecure Documentation Portal: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/index-en.html
+- Alternate Docs Site: https://docs.illumio.com/cloudsecure/Content/Home.htm
+
+### Cortex API Query Issue Investigation (Lee)
+- CloudSecure reads from storage NOT direct API calls — this should not contribute to the API saturation issue
+- Illumio REST API rate limit: 500 req/min per session
+- Terraform provider built-in rate limit: 125 req/min with backoff
+
+### POC Use Case Preparation (Michael)
+- Policy Model (progressive enforcement): https://product-docs-repo.illumio.com/Tech-Docs/Core/24.4/Security-Policy/out/en/overview-of-security-policy/the-illumio-policy-model.html
+- CloudSecure Demo: https://www.illumio.com/resource-center/illumio-cloudsecure-demo
+
+### IaC Automation Requirement Clarification (Kong)
+- CloudSecure Terraform Provider: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/cloud-terraform-provider.html
+- Illumio Core Terraform Provider: https://registry.terraform.io/providers/illumio/illumio-core/latest/docs
+- CloudSecure Terraform on GitHub: https://github.com/illumio/terraform-provider-illumio-cloudsecure
+
+### Log Broker Solution Exploration (Kong)
+- CloudSecure reads from S3/Blob/PubSub (already a brokered model): https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/get-started/set-up-flow-logs-in-your-csp-environment.html
+- Enriched flow export to S3 hourly: https://product-docs-repo.illumio.com/Tech-Docs/CloudSecure/out/en/administer-cloudsecure/connector.html
+- Centralized S3 bucket recommendation (AWS): Same flow log setup page above
+- Illumio S3 log export deep dive: https://www.illumio.com/blog/s3-buckets-log-export
